@@ -1,0 +1,726 @@
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+<script type="text/javascript">
+/*//
+*******************************************
+*  _                    _             _   *
+* | |    __ _ _ __ ___ | |__       _-(")- *
+* | |   / _` | '_ ` _ \| '_ \    `%%%%%   *
+* | |__| (_| | | | |_| | |_) | _  // \\   *
+* |_____\__,_|_| |_| |_|_.__/_| |__  ___  *
+*                  | |   / _` | '_ \/ __| *
+*                  | |__| (_| | |_) \__ \ *
+*  2019-05-21      |_____\__,_|_.__/|___/ *
+*******************************************
+//*/
+var gl;
+var shaderProgram;
+var uPMatrix;
+var vertexPositionBuffer;
+var vertexColorBuffer;
+var vertexCoordsBuffer;
+var vertexNormalBuffer;
+
+//Implementacja mnożenia macierzy
+function MatrixMul(a, b)
+{
+  c = [
+  0, 0, 0, 0,
+  0, 0, 0, 0,
+  0, 0, 0, 0,
+  0, 0, 0, 0,
+  ];
+  for (let i = 0; i < 4; i++) {
+    for (let j = 0; j < 4; j++) {
+      c[i * 4 + j] = 0.0;
+      for (let k = 0; k < 4; k++) {
+        c[i * 4 + j] += a[i * 4 + k] * b[k * 4 + j];
+      }
+    }
+  }
+
+  return c;
+}
+
+function CrossProduct(a,b) {
+  let s1 = a[1]*b[2] - a[2]*b[1];
+  let s2 = a[2]*b[0] - a[0]*b[2];
+  let s3 = a[0]*b[1] - a[1]*b[0];
+  return [s1,s2,s3];
+}
+
+function NormalizeVector(a) {
+  let l = a[0]*a[0]+a[1]*a[1]+a[2]*a[2];
+  l = Math.sqrt(l);
+  return [a[0]/l,a[1]/l,a[2]/l];
+}
+
+
+function CreateBand(n,r1,r2,l1,l2,j,m,texture_position) {
+  let vertexPosition = [];
+  let vertexColor = [];
+  let vertexCoord = [];
+  let vertexNormal = [];
+  let deltaAlpha = 360/n;
+  for(let i=0;i<n;i++) {
+    let alpha1 = i*deltaAlpha;
+    let alpha2 = (i+1)*deltaAlpha;
+    let x1 = r1*Math.cos(alpha1 * Math.PI /180);
+    let y1 = l1;
+    let z1 = r1*Math.sin(alpha1 * Math.PI /180);
+    let x2 = r1*Math.cos(alpha2 * Math.PI /180);
+    let y2 = l1;
+    let z2 = r1*Math.sin(alpha2 * Math.PI /180);
+
+    let x3 = r2*Math.cos(alpha1 * Math.PI /180);
+    let y3 = l2;
+    let z3 = r2*Math.sin(alpha1 * Math.PI /180);
+    let x4 = r2*Math.cos(alpha2 * Math.PI /180);
+    let y4 = l2;
+    let z4 = r2*Math.sin(alpha2 * Math.PI /180);
+
+    let n1 = CrossProduct([x2-x1,y2-y1,z2-z1],[x3-x1,y3-y1,z3-z1]);
+    n1 = NormalizeVector(n1);
+    if(j<0){ j = m/2 - j-1;}
+    vertexPosition.push(...[x1,y1,z1]); vertexColor.push(...[0.5,0.5,0.5]); vertexCoord.push(...[texture_position+0.1*(i+1)/n,(j+1)/m]); vertexNormal.push(...n1);
+    vertexPosition.push(...[x2,y2,z2]); vertexColor.push(...[0.5,0.5,0.5]); vertexCoord.push(...[texture_position+0.1*i/n,(j+1)/m]); vertexNormal.push(...n1);
+    vertexPosition.push(...[x4,y4,z4]); vertexColor.push(...[0.5,0.5,0.5]); vertexCoord.push(...[texture_position+0.1*i/n,j/m]); vertexNormal.push(...n1);
+
+    vertexPosition.push(...[x1,y1,z1]); vertexColor.push(...[0.5,0.5,0.5]); vertexCoord.push(...[texture_position+0.1*(i+1)/n,(j+1)/m]); vertexNormal.push(...n1);
+    vertexPosition.push(...[x4,y4,z4]); vertexColor.push(...[0.5,0.5,0.5]); vertexCoord.push(...[texture_position+0.1*i/n,j/m]); vertexNormal.push(...n1);
+    vertexPosition.push(...[x3,y3,z3]); vertexColor.push(...[0.5,0.5,0.5]); vertexCoord.push(...[texture_position+0.1*(i+1)/n,j/m]); vertexNormal.push(...n1);
+  }
+  return [vertexPosition, vertexColor, vertexCoord, vertexNormal];
+}
+
+
+//Implementacja transpozycji macierzy
+function MatrixTranspose(a)
+{
+  c = [
+  0, 0, 0, 0,
+  0, 0, 0, 0,
+  0, 0, 0, 0,
+  0, 0, 0, 0,
+  ];
+  for (let i = 0; i < 4; i++) {
+    for (let j = 0; j < 4; j++) {
+      c[i * 4 + j] = a[j * 4 + i];
+    }
+  }
+
+  return c;
+}
+
+function startGL()
+{
+  //Init OpenGL context
+  let canvas = document.getElementById('canvas3D');
+  gl = canvas.getContext('experimental-webgl');
+  gl.viewportWidth = canvas.width;
+  gl.viewportHeight = canvas.height;
+
+  //Init Shaders
+  const vertextShaderSource = `
+    precision highp float;
+    attribute vec3 aVertexPosition;
+    attribute vec3 aVertexColor;
+    attribute vec2 aVertexCoords;
+    attribute vec3 aVertexNormal;
+    uniform mat4 uMVMatrix;
+    uniform mat4 uPMatrix;
+    uniform float uBrightness;
+
+    varying vec3 vPos;
+    varying vec3 vColor;
+    varying vec2 vTexUV;
+    varying vec3 vNormal;
+    void main(void) {
+      gl_Position = uPMatrix * uMVMatrix * vec4(aVertexPosition, 1.0);
+      //gl_Position = uMVMatrix * vec4(aVertexPosition, 1.0);
+      //gl_Position.x = uMVMatrix[1][0]*0.5;
+      //gl_Position.y = uMVMatrix[1][1]*0.5;
+      //gl_Position.z = uMVMatrix[1][2]*0.5;
+      //gl_Position.w = 1.0;
+      gl_PointSize = 3.0;
+      vColor = aVertexColor * uBrightness;
+      //vColor = aVertexNormal;
+      vTexUV = aVertexCoords;
+      vPos = aVertexPosition;
+      vNormal = aVertexNormal;
+    }
+  `;
+  const fragmentShaderSource = `
+    precision highp float;
+    varying vec3 vPos;
+    varying vec3 vColor;
+    varying vec2 vTexUV;
+    varying vec3 vNormal;
+    uniform sampler2D uSampler;
+    uniform vec3 uLightPosition;
+    void main(void) {
+       vec3 lightDirection = normalize(uLightPosition - vPos);
+       float brightness = max(dot(vNormal,lightDirection), 0.0);
+
+       //gl_FragColor = vec4(vColor,1.0);
+       gl_FragColor = clamp(texture2D(uSampler,vTexUV) * vec4(brightness,brightness,brightness,1.0),0.0,1.0);
+       //gl_FragColor = vec4(brightness,brightness,brightness,1.0);
+    }
+  `;
+  let fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
+  let vertexShader   = gl.createShader(gl.VERTEX_SHADER);
+  gl.shaderSource(fragmentShader, fragmentShaderSource);
+  gl.shaderSource(vertexShader, vertextShaderSource);
+  gl.compileShader(fragmentShader);
+  gl.compileShader(vertexShader);
+  if (!gl.getShaderParameter(fragmentShader, gl.COMPILE_STATUS)) {
+    alert(gl.getShaderInfoLog(fragmentShader));
+    return null;
+  }
+
+  if (!gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS)) {
+    alert(gl.getShaderInfoLog(vertexShader));
+    return null;
+  }
+
+  shaderProgram = gl.createProgram();
+  gl.attachShader(shaderProgram, vertexShader);
+  gl.attachShader(shaderProgram, fragmentShader);
+  gl.linkProgram(shaderProgram);
+  if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) alert('Could not initialise shaders');
+
+  let fBodyA = 2.0;
+  let fBodyHeight = 3.0;
+  let fLegA = 0.5;
+  let fLegHeight = -2.0;
+  let fArmA = 0.5;
+  let fArmHeight = -1.5;
+  let fNeckA = 1.0;
+  let fNeckHeight = 1.5;
+  //Init Buffers
+
+  function drawCircle(n,m,R,texture)
+  {
+    // let n = 10;
+    // let m = 10;
+    // let R = 2;
+    let vertexPosition = [];
+    let vertexColor = [];
+    let vertexCoords = [];
+    let vertexNormal = [];
+    let deltaBeta = 180/m;
+    for(let i=-m/2;i<m/2;i++) {
+        let beta1 = i*deltaBeta;
+        let beta2 = (i+1)*deltaBeta;
+        let r1 = R*Math.cos(beta1 * Math.PI/180);
+        let l1 = R*Math.sin(beta1 * Math.PI/180);
+        let r2 = R*Math.cos(beta2 * Math.PI/180);
+        let l2 = R*Math.sin(beta2 * Math.PI/180);
+        let [localVertexPosition,localVertexColor, localVertexCoord, localVertexNormal] = CreateBand(n,r1,r2,l1,l2,i,m,texture);
+        vertexPosition.push(...localVertexPosition);
+        vertexColor.push(...localVertexColor);
+        vertexCoords.push(...localVertexCoord);
+        vertexNormal.push(...localVertexNormal);
+    }
+    return[vertexPosition, vertexColor, vertexCoords, vertexNormal];
+  }
+  let m = 50;
+  let n = 50;
+  let vertexPosition = [];
+  let vertexColor = [];
+  let vertexCoords = [];
+  let vertexNormal = [];
+  //sun
+  [vertexPosition, vertexColor, vertexCoords, vertexNormal] = drawCircle(m,n,1.0,0);
+  vertexPositionBufferSun = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexPositionBufferSun);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexPosition), gl.STATIC_DRAW);
+  vertexPositionBufferSun.itemSize = 3;
+  vertexPositionBufferSun.numItems = vertexPosition.length/(9);
+
+  vertexNormalBufferSun = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexNormalBufferSun);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexColor), gl.STATIC_DRAW);
+  vertexNormalBufferSun.itemSize = 3;
+  vertexNormalBufferSun.numItems = vertexNormalBufferSun.length/9;
+
+  vertexCoordsBufferSun = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexCoordsBufferSun);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexCoords), gl.STATIC_DRAW);
+  vertexCoordsBufferSun.itemSize = 2;
+  vertexCoordsBufferSun.numItems = vertexCoordsBufferSun.length/6;
+  //mercury
+  [vertexPosition, vertexColor, vertexCoords, vertexNormal] = drawCircle(m,n,0.1,0.1);
+  vertexPositionBufferMercury = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexPositionBufferMercury);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexPosition), gl.STATIC_DRAW);
+  vertexPositionBufferMercury.itemSize = 3;
+  vertexPositionBufferMercury.numItems = vertexPosition.length/(9);
+
+  vertexCoordsBufferMercury = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexCoordsBufferMercury);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexCoords), gl.STATIC_DRAW);
+  vertexCoordsBufferMercury.itemSize = 2;
+  vertexCoordsBufferMercury.numItems = vertexCoordsBufferMercury.length/6;
+  //venus
+  [vertexPosition, vertexColor, vertexCoords, vertexNormal] = drawCircle(m,n,0.3,0.2);
+  vertexPositionBufferVenus = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexPositionBufferVenus);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexPosition), gl.STATIC_DRAW);
+  vertexPositionBufferVenus.itemSize = 3;
+  vertexPositionBufferVenus.numItems = vertexPosition.length/(9);
+
+  vertexCoordsBufferVenus = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexCoordsBufferVenus);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexCoords), gl.STATIC_DRAW);
+  vertexCoordsBufferVenus.itemSize = 2;
+  vertexCoordsBufferVenus.numItems = vertexCoordsBufferVenus.length/6;
+  //earth
+  [vertexPosition, vertexColor, vertexCoords, vertexNormal] = drawCircle(m,n,0.2,0.3);
+  vertexPositionBufferEarth = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexPositionBufferEarth);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexPosition), gl.STATIC_DRAW);
+  vertexPositionBufferEarth.itemSize = 3;
+  vertexPositionBufferEarth.numItems = vertexPosition.length/(9);
+
+  vertexCoordsBufferEarth = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexCoordsBufferEarth);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexCoords), gl.STATIC_DRAW);
+  vertexCoordsBufferEarth.itemSize = 2;
+  vertexCoordsBufferEarth.numItems = vertexCoordsBufferEarth.length/6;
+  //mars
+  [vertexPosition, vertexColor, vertexCoords, vertexNormal] = drawCircle(m,n,0.1,0.4);
+  vertexPositionBufferMars = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexPositionBufferMars);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexPosition), gl.STATIC_DRAW);
+  vertexPositionBufferMars.itemSize = 3;
+  vertexPositionBufferMars.numItems = vertexPosition.length/(9);
+
+  vertexCoordsBufferMars = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexCoordsBufferMars);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexCoords), gl.STATIC_DRAW);
+  vertexCoordsBufferMars.itemSize = 2;
+  vertexCoordsBufferMars.numItems = vertexCoordsBufferMars.length/6;
+  //Jupiter
+  [vertexPosition, vertexColor, vertexCoords, vertexNormal] = drawCircle(m,n,0.5,0.5);
+  vertexPositionBufferJupiter = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexPositionBufferJupiter);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexPosition), gl.STATIC_DRAW);
+  vertexPositionBufferJupiter.itemSize = 3;
+  vertexPositionBufferJupiter.numItems = vertexPosition.length/(9);
+
+  vertexCoordsBufferJupiter = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexCoordsBufferJupiter);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexCoords), gl.STATIC_DRAW);
+  vertexCoordsBufferJupiter.itemSize = 2;
+  vertexCoordsBufferJupiter.numItems = vertexCoordsBufferJupiter.length/6;
+  //Saturn
+  [vertexPosition, vertexColor, vertexCoords, vertexNormal] = drawCircle(m,n,0.4,0.6);
+  vertexPositionBufferSaturn = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexPositionBufferSaturn);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexPosition), gl.STATIC_DRAW);
+  vertexPositionBufferSaturn.itemSize = 3;
+  vertexPositionBufferSaturn.numItems = vertexPosition.length/(9);
+
+  vertexCoordsBufferSaturn = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexCoordsBufferSaturn);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexCoords), gl.STATIC_DRAW);
+  vertexCoordsBufferSaturn.itemSize = 2;
+  vertexCoordsBufferSaturn.numItems = vertexCoordsBufferSaturn.length/6;
+  //Uranus
+  [vertexPosition, vertexColor, vertexCoords, vertexNormal] = drawCircle(m,n,0.3,0.7);
+  vertexPositionBufferUranus = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexPositionBufferUranus);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexPosition), gl.STATIC_DRAW);
+  vertexPositionBufferUranus.itemSize = 3;
+  vertexPositionBufferUranus.numItems = vertexPosition.length/(9);
+
+  vertexCoordsBufferUranus = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexCoordsBufferUranus);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexCoords), gl.STATIC_DRAW);
+  vertexCoordsBufferUranus.itemSize = 2;
+  vertexCoordsBufferUranus.numItems = vertexCoordsBufferUranus.length/6;
+  //Neptune
+  [vertexPosition, vertexColor, vertexCoords, vertexNormal] = drawCircle(m,n,0.3,0.8);
+  vertexPositionBufferNeptune = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexPositionBufferNeptune);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexPosition), gl.STATIC_DRAW);
+  vertexPositionBufferNeptune.itemSize = 3;
+  vertexPositionBufferNeptune.numItems = vertexPosition.length/(9);
+
+  vertexCoordsBufferNeptune = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexCoordsBufferNeptune);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexCoords), gl.STATIC_DRAW);
+  vertexCoordsBufferNeptune.itemSize = 2;
+  vertexCoordsBufferNeptune.numItems = vertexCoordsBufferNeptune.length/6;
+
+
+
+
+
+  vertexColorBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexColorBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexColor), gl.STATIC_DRAW);
+  vertexColorBuffer.itemSize = 3;
+  vertexColorBuffer.numItems = vertexColorBuffer.length/9;
+
+
+  vertexNormalBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexNormalBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexNormal), gl.STATIC_DRAW);
+  vertexNormalBuffer.itemSize = 3;
+  vertexNormalBuffer.numItems = vertexNormalBuffer.length/9;
+
+  //let textureImg = document.getElementById('textureImg');
+  textureBuffer = gl.createTexture();
+  var textureImg = new Image();
+  textureImg.onload = function() {
+    gl.bindTexture(gl.TEXTURE_2D, textureBuffer);
+    //gl.texImage2D(gl.TEXTURE_2D, 0, textureImg);
+    //gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 480, 480, 0, gl.RGBA, gl.UNSIGNED_BYTE, textureImg.image);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, textureImg);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  }
+  textureImg.src="Tex.png";
+  //Init Matrices
+  let aspect = gl.viewportWidth / gl.viewportHeight;
+  let fov = 45.0 * Math.PI / 180.0;
+  let zFar = 150.0;
+  let zNear = 0.1;
+  uPMatrix = [
+   1.0 / (aspect * Math.tan(fov / 2)), 0                        , 0                                    , 0,
+   0                                 , 1.0 / (Math.tan(fov / 2)), 0                                    , 0,
+   0                                 , 0                        , -(zFar + zNear) / (zFar - zNear)     , -1,
+   0                                 , 0                        , -(2 * zFar * zNear) / (zFar - zNear), 0.0,
+  ];
+  Tick();
+}
+
+var angle = 20.0;
+var angleZ = 0.0;
+var angleY = 0.0;
+var angleX = 0.0;
+var translateZ = -15.0;
+var translateY = 0.0;
+var translateX = 0.0;
+
+var translateZ2 = 0.0;
+var translateY2 = 0.0;
+var translateX2 = 0.0;
+
+var lightX = 10;
+var lightY = 0;
+var lightZ = 0;
+
+function Tick()
+{
+  angleX = angleX + 1.0;
+  angleY = angleY + 1.0;
+  let uMVMatrix = MatrixTranspose([
+  1, 0, 0, 0,
+  0, 1, 0, 0,
+  0, 0, 1, 0,
+  0, 0, 0, 1,
+ ]);
+
+  let uMVTranslateConstX0_4 = MatrixTranspose([
+  1, 0, 0, 0,
+  0, 1, 0, 0,
+  0, 0, 1, 0,
+  0.4, 0, 0, 1,
+  ]);
+  let uMVTranslateConstX0_6 = MatrixTranspose([
+  1, 0, 0, 0,
+  0, 1, 0, 0,
+  0, 0, 1, 0,
+  0.6, 0, 0, 1,
+  ]);
+  let uMVTranslateConstX0_8 = MatrixTranspose([
+  1, 0, 0, 0,
+  0, 1, 0, 0,
+  0, 0, 1, 0,
+  0.8, 0, 0, 1,
+  ]);
+  let uMVTranslateConstX1_0 = MatrixTranspose([
+  1, 0, 0, 0,
+  0, 1, 0, 0,
+  0, 0, 1, 0,
+  1.0, 0, 0, 1,
+  ]);
+  let uMVTranslateConstX1_2 = MatrixTranspose([
+  1, 0, 0, 0,
+  0, 1, 0, 0,
+  0, 0, 1, 0,
+  1.2, 0, 0, 1,
+  ]);
+
+  let uMVTranslateConstY = MatrixTranspose([
+  1, 0, 0, 0,
+  0, 1, 0, 0,
+  0, 0, 1, 0,
+  0, 2, 0, 1,
+  ]);
+
+  let uMVTranslateConstZ = MatrixTranspose([
+  1, 0, 0, 0,
+  0, 1, 0, 0,
+  0, 0, 1, 0,
+  0, 0, 2, 1,
+  ]);
+
+  let uMVTranslateConstmX = MatrixTranspose([
+  1, 0, 0, 0,
+  0, 1, 0, 0,
+  0, 0, 1, 0,
+  -2, 0, 0, 1,
+  ]);
+
+  let uMVTranslateConstmY = MatrixTranspose([
+  1, 0, 0, 0,
+  0, 1, 0, 0,
+  0, 0, 1, 0,
+  0, -2, 0, 1,
+  ]);
+
+  let uMVTranslateConstmZ = MatrixTranspose([
+  1, 0, 0, 0,
+  0, 1, 0, 0,
+  0, 0, 1, 0,
+  0, 0, -2, 1,
+  ]);
+
+  let uMVTranslateZ = MatrixTranspose([
+  1, 0, 0, 0,
+  0, 1, 0, 0,
+  0, 0, 1, 0,
+  translateX, translateY, translateZ, 1,
+  ]);
+
+  let uMVTranslateZ2 = MatrixTranspose([
+  1, 0, 0, 0,
+  0, 1, 0, 0,
+  0, 0, 1, 0,
+  translateX2, translateY2, translateZ2, 1,
+  ]);
+
+  let uMVRotZ = MatrixTranspose([
+  +Math.cos(angleZ*Math.PI/180.0),+Math.sin(angleZ*Math.PI/180.0),0,0,
+  -Math.sin(angleZ*Math.PI/180.0),+Math.cos(angleZ*Math.PI/180.0),0,0,
+  0,0,1,0,
+  0,0,0,1
+  ]);
+  let uMVRotY = MatrixTranspose([
+  +Math.cos(angleY*Math.PI/180.0),0,-Math.sin(angleY*Math.PI/180.0),0,
+  0,1,0,0,
+  +Math.sin(angleY*Math.PI/180.0),0,+Math.cos(angleY*Math.PI/180.0),0,
+  0,0,0,1
+  ]);
+  let uMVRotX = MatrixTranspose([
+  1,0,0,0,
+  0,+Math.cos(angleX*Math.PI/180.0),+Math.sin(angleX*Math.PI/180.0),0,
+  0,-Math.sin(angleX*Math.PI/180.0),+Math.cos(angleX*Math.PI/180.0),0,
+  0,0,0,1
+  ]);
+
+  //Create Model View Matrix by Multiplication elementary matrices
+  //uMVMatrix = uMVTranslateZ*uMVRotX*uMVRotY*uMVRotZ
+  //uMVMatrix = MatrixMul(uMVMatrix,uMVRotX);
+  //uMVMatrix = MatrixMul(uMVMatrix,uMVRotY);
+  //uMVMatrix = MatrixMul(uMVMatrix,uMVRotZ);
+  //uMVMatrix = MatrixMul(uMVMatrix,uMVTranslateZ);
+
+  uMVMatrix = MatrixMul(uMVRotX,uMVMatrix);
+  uMVMatrix = MatrixMul(uMVRotY,uMVMatrix);
+  uMVMatrix = MatrixMul(uMVRotZ,uMVMatrix);
+  uMVMatrix = MatrixMul(uMVTranslateZ,uMVMatrix);
+
+  //Render Scene
+  gl.viewport(0, 0, gl.viewportWidth, gl.viewportHeight);
+  gl.clearColor(1.0,0.2,0.2,1.0);
+  gl.clearDepth(1.0);                 // Clear everything
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.useProgram(shaderProgram)
+
+  gl.enable(gl.DEPTH_TEST);           // Enable depth testing
+  gl.depthFunc(gl.LEQUAL);            // Near things obscure far things
+
+  //gl.enable(gl.GL_CULL_FACE);
+  //gl.cullFace(gl.GL_FRONT_AND_BACK);
+  //gl.frontFace(gl.CW);
+
+ //draw sun
+  gl.uniformMatrix4fv(gl.getUniformLocation(shaderProgram, "uPMatrix"), false, new Float32Array(uPMatrix)); //Pass matrices
+  gl.uniformMatrix4fv(gl.getUniformLocation(shaderProgram, "uMVMatrix"), false, new Float32Array(MatrixTranspose(uMVMatrix)));
+
+  gl.enableVertexAttribArray(gl.getAttribLocation(shaderProgram, "aVertexPosition"));  //Pass the geometry
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexPositionBufferSun);
+  gl.vertexAttribPointer(gl.getAttribLocation(shaderProgram, "aVertexPosition"), vertexPositionBufferSun.itemSize, gl.FLOAT, false, 0, 0);
+
+  gl.enableVertexAttribArray(gl.getAttribLocation(shaderProgram, "aVertexColor"));  //Pass the geometry
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexColorBuffer);
+  gl.vertexAttribPointer(gl.getAttribLocation(shaderProgram, "aVertexColor"), vertexColorBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+  gl.enableVertexAttribArray(gl.getAttribLocation(shaderProgram, "aVertexCoords"));  //Pass the geometry
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexCoordsBufferSun);
+  gl.vertexAttribPointer(gl.getAttribLocation(shaderProgram, "aVertexCoords"), vertexCoordsBufferSun.itemSize, gl.FLOAT, false, 0, 0);
+
+  gl.enableVertexAttribArray(gl.getAttribLocation(shaderProgram, "aVertexNormal"));  //Pass the geometry
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexNormalBufferSun);
+  gl.vertexAttribPointer(gl.getAttribLocation(shaderProgram, "aVertexNormal"), vertexNormalBufferSun.itemSize, gl.FLOAT, false, 0, 0);
+
+  gl.uniform1f(gl.getUniformLocation(shaderProgram, "uBrightness"), 0.6);
+
+  gl.uniform3f(gl.getUniformLocation(shaderProgram, "uLightPosition"),lightX,lightY,lightZ);
+
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, textureBuffer);
+  gl.uniform1i(gl.getUniformLocation(shaderProgram, "uSampler"), 0);
+
+
+  gl.drawArrays(gl.TRIANGLES, 0, vertexPositionBufferSun.numItems*3); //Invoke drawing
+
+  //draw planet 1 - mercury
+
+  gl.enableVertexAttribArray(gl.getAttribLocation(shaderProgram, "aVertexPosition"));  //Pass the geometry
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexPositionBufferMercury);
+  gl.vertexAttribPointer(gl.getAttribLocation(shaderProgram, "aVertexPosition"), vertexPositionBufferMercury.itemSize, gl.FLOAT, false, 0, 0);
+  
+  gl.enableVertexAttribArray(gl.getAttribLocation(shaderProgram, "aVertexCoords"));  //Pass the geometry
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexCoordsBufferMercury);
+  gl.vertexAttribPointer(gl.getAttribLocation(shaderProgram, "aVertexCoords"), vertexCoordsBufferMercury.itemSize, gl.FLOAT, false, 0, 0);
+
+  uMVMatrix = MatrixMul(uMVMatrix,uMVTranslateConstX1_2);
+  gl.uniformMatrix4fv(gl.getUniformLocation(shaderProgram, "uMVMatrix"), false, new Float32Array(MatrixTranspose(uMVMatrix)));
+  gl.drawArrays(gl.TRIANGLES, 0, vertexPositionBufferMercury.numItems*3); //Invoke drawing
+
+  gl.enableVertexAttribArray(gl.getAttribLocation(shaderProgram, "aVertexNormal"));  //Pass the geometry
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexNormalBuffer);
+  gl.vertexAttribPointer(gl.getAttribLocation(shaderProgram, "aVertexNormal"), vertexNormalBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+  //draw planet 2 - venus
+
+  gl.enableVertexAttribArray(gl.getAttribLocation(shaderProgram, "aVertexPosition"));  //Pass the geometry
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexPositionBufferVenus);
+  gl.vertexAttribPointer(gl.getAttribLocation(shaderProgram, "aVertexPosition"), vertexPositionBufferVenus.itemSize, gl.FLOAT, false, 0, 0);
+
+  gl.enableVertexAttribArray(gl.getAttribLocation(shaderProgram, "aVertexCoords"));  //Pass the geometry
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexCoordsBufferVenus);
+  gl.vertexAttribPointer(gl.getAttribLocation(shaderProgram, "aVertexCoords"), vertexCoordsBufferVenus.itemSize, gl.FLOAT, false, 0, 0);
+
+  uMVMatrix = MatrixMul(uMVMatrix,uMVTranslateConstX0_6);
+  gl.uniformMatrix4fv(gl.getUniformLocation(shaderProgram, "uMVMatrix"), false, new Float32Array(MatrixTranspose(uMVMatrix)));
+  gl.drawArrays(gl.TRIANGLES, 0, vertexPositionBufferVenus.numItems*3); //Invoke drawing
+  //draw planet 3 - earth
+  gl.enableVertexAttribArray(gl.getAttribLocation(shaderProgram, "aVertexPosition"));  //Pass the geometry
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexPositionBufferEarth);
+  gl.vertexAttribPointer(gl.getAttribLocation(shaderProgram, "aVertexPosition"), vertexPositionBufferEarth.itemSize, gl.FLOAT, false, 0, 0);
+
+  gl.enableVertexAttribArray(gl.getAttribLocation(shaderProgram, "aVertexCoords"));  //Pass the geometry
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexCoordsBufferEarth);
+  gl.vertexAttribPointer(gl.getAttribLocation(shaderProgram, "aVertexCoords"), vertexCoordsBufferEarth.itemSize, gl.FLOAT, false, 0, 0);
+
+  uMVMatrix = MatrixMul(uMVMatrix,uMVTranslateConstX0_6);
+  gl.uniformMatrix4fv(gl.getUniformLocation(shaderProgram, "uMVMatrix"), false, new Float32Array(MatrixTranspose(uMVMatrix)));
+  gl.drawArrays(gl.TRIANGLES, 0, vertexPositionBufferEarth.numItems*3); //Invoke drawing
+  
+  //draw planet 4 - mars
+  gl.enableVertexAttribArray(gl.getAttribLocation(shaderProgram, "aVertexPosition"));  //Pass the geometry
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexPositionBufferMars);
+  gl.vertexAttribPointer(gl.getAttribLocation(shaderProgram, "aVertexPosition"), vertexPositionBufferMars.itemSize, gl.FLOAT, false, 0, 0);
+
+  gl.enableVertexAttribArray(gl.getAttribLocation(shaderProgram, "aVertexCoords"));  //Pass the geometry
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexCoordsBufferMars);
+  gl.vertexAttribPointer(gl.getAttribLocation(shaderProgram, "aVertexCoords"), vertexCoordsBufferMars.itemSize, gl.FLOAT, false, 0, 0);
+
+  uMVMatrix = MatrixMul(uMVMatrix,uMVTranslateConstX0_4);
+  gl.uniformMatrix4fv(gl.getUniformLocation(shaderProgram, "uMVMatrix"), false, new Float32Array(MatrixTranspose(uMVMatrix)));
+  gl.drawArrays(gl.TRIANGLES, 0, vertexPositionBufferMars.numItems*3); //Invoke drawing
+
+  //draw planet 5 - Jupiter
+  gl.enableVertexAttribArray(gl.getAttribLocation(shaderProgram, "aVertexPosition"));  //Pass the geometry
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexPositionBufferJupiter);
+  gl.vertexAttribPointer(gl.getAttribLocation(shaderProgram, "aVertexPosition"), vertexPositionBufferJupiter.itemSize, gl.FLOAT, false, 0, 0);
+
+  gl.enableVertexAttribArray(gl.getAttribLocation(shaderProgram, "aVertexCoords"));  //Pass the geometry
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexCoordsBufferJupiter);
+  gl.vertexAttribPointer(gl.getAttribLocation(shaderProgram, "aVertexCoords"), vertexCoordsBufferJupiter.itemSize, gl.FLOAT, false, 0, 0);
+
+  uMVMatrix = MatrixMul(uMVMatrix,uMVTranslateConstX1_0);
+  gl.uniformMatrix4fv(gl.getUniformLocation(shaderProgram, "uMVMatrix"), false, new Float32Array(MatrixTranspose(uMVMatrix)));
+  gl.drawArrays(gl.TRIANGLES, 0, vertexPositionBufferJupiter.numItems*3); //Invoke drawing
+
+  //draw planet 5 - Saturn
+  gl.enableVertexAttribArray(gl.getAttribLocation(shaderProgram, "aVertexPosition"));  //Pass the geometry
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexPositionBufferSaturn);
+  gl.vertexAttribPointer(gl.getAttribLocation(shaderProgram, "aVertexPosition"), vertexPositionBufferSaturn.itemSize, gl.FLOAT, false, 0, 0);
+
+  gl.enableVertexAttribArray(gl.getAttribLocation(shaderProgram, "aVertexCoords"));  //Pass the geometry
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexCoordsBufferSaturn);
+  gl.vertexAttribPointer(gl.getAttribLocation(shaderProgram, "aVertexCoords"), vertexCoordsBufferSaturn.itemSize, gl.FLOAT, false, 0, 0);
+
+  uMVMatrix = MatrixMul(uMVMatrix,uMVTranslateConstX1_0);
+  gl.uniformMatrix4fv(gl.getUniformLocation(shaderProgram, "uMVMatrix"), false, new Float32Array(MatrixTranspose(uMVMatrix)));
+  gl.drawArrays(gl.TRIANGLES, 0, vertexPositionBufferSaturn.numItems*3); //Invoke drawing
+
+  //draw planet 5 - Uranus
+  gl.enableVertexAttribArray(gl.getAttribLocation(shaderProgram, "aVertexPosition"));  //Pass the geometry
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexPositionBufferUranus);
+  gl.vertexAttribPointer(gl.getAttribLocation(shaderProgram, "aVertexPosition"), vertexPositionBufferUranus.itemSize, gl.FLOAT, false, 0, 0);
+
+  gl.enableVertexAttribArray(gl.getAttribLocation(shaderProgram, "aVertexCoords"));  //Pass the geometry
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexCoordsBufferUranus);
+  gl.vertexAttribPointer(gl.getAttribLocation(shaderProgram, "aVertexCoords"), vertexCoordsBufferUranus.itemSize, gl.FLOAT, false, 0, 0);
+
+  uMVMatrix = MatrixMul(uMVMatrix,uMVTranslateConstX0_8);
+  gl.uniformMatrix4fv(gl.getUniformLocation(shaderProgram, "uMVMatrix"), false, new Float32Array(MatrixTranspose(uMVMatrix)));
+  gl.drawArrays(gl.TRIANGLES, 0, vertexPositionBufferUranus.numItems*3); //Invoke drawing
+
+  //draw planet 5 - Neptune
+  gl.enableVertexAttribArray(gl.getAttribLocation(shaderProgram, "aVertexPosition"));  //Pass the geometry
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexPositionBufferNeptune);
+  gl.vertexAttribPointer(gl.getAttribLocation(shaderProgram, "aVertexPosition"), vertexPositionBufferNeptune.itemSize, gl.FLOAT, false, 0, 0);
+
+  gl.enableVertexAttribArray(gl.getAttribLocation(shaderProgram, "aVertexCoords"));  //Pass the geometry
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexCoordsBufferNeptune);
+  gl.vertexAttribPointer(gl.getAttribLocation(shaderProgram, "aVertexCoords"), vertexCoordsBufferNeptune.itemSize, gl.FLOAT, false, 0, 0);
+
+  uMVMatrix = MatrixMul(uMVMatrix,uMVTranslateConstX0_8);
+  gl.uniformMatrix4fv(gl.getUniformLocation(shaderProgram, "uMVMatrix"), false, new Float32Array(MatrixTranspose(uMVMatrix)));
+  gl.drawArrays(gl.TRIANGLES, 0, vertexPositionBufferNeptune.numItems*3); //Invoke drawing  
+  //gl.drawArrays(gl.POINTS, 0, vertexPositionBuffer.numItems); //Invoke drawing
+
+  setTimeout(Tick,100);
+}
+
+function keydown(e)
+{
+ if(e.keyCode==87) angleX=angleX+1.0;
+ if(e.keyCode==83) angleX=angleX-1.0;
+ if(e.keyCode==68) angleY=angleY+1.0;
+ if(e.keyCode==65) angleY=angleY-1.0;
+ if(e.keyCode==81) angleZ=angleZ+1.0;
+ if(e.keyCode==69) angleZ=angleZ-1.0;
+
+ if(e.keyCode==39) translateX=translateX+0.1;
+ if(e.keyCode==37) translateX=translateX-0.1;
+ if(e.keyCode==38) translateY=translateY+0.1;
+ if(e.keyCode==40) translateY=translateY-0.1;
+ if(e.keyCode==34) translateZ=translateZ+0.1;
+ if(e.keyCode==33) translateZ=translateZ-0.1;
+
+ if(e.keyCode==76) lightX=lightX+0.1;
+ if(e.keyCode==74) lightX=lightX-0.1;
+ if(e.keyCode==73) lightY=lightY+0.1;
+ if(e.keyCode==75) lightY=lightY-0.1;
+ if(e.keyCode==85) lightZ=lightZ+0.1;
+ if(e.keyCode==79) lightZ=lightZ-0.1;
+}
+</script>
+</head>
+<body onload="startGL()" onkeydown="keydown(event)">
+<canvas id="canvas3D" width="640" height="480" style="border: solid black 1px"></canvas>
+</body>
+</html>
